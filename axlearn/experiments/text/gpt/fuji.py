@@ -15,6 +15,7 @@ import functools
 import itertools
 from typing import Any, List, NamedTuple, Optional, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -408,7 +409,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=len(jax.devices()),
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -422,6 +423,24 @@ def get_trainer_kwargs(
                 # tpu-v4-(1024|2048).
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
+                (
+                    "tpu-v5litepod-32-2",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=32)
+                            ),
+                            # RematSpecModifier.default_config().set(
+                            #     remat_policies={
+                            #         "model.decoder.transformer.layer": RematSpec(
+                            #             prevent_cse=False,
+                            #             policy=offload_dots_saveable_policy,
+                            #         ),
+                            #     }
+                            # ),
+                        ],
+                    ),
+                ),
                 (
                     "tpu-v5litepod-256",
                     ChainConfigModifier.default_config().set(
