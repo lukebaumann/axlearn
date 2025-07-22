@@ -251,6 +251,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # In Jax 0.6.2 and beyond this flag can be renamed to
         # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS as well.
         self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
+        self._update_env_list(env_list, "TF_CPP_MIN_LOG_LEVEL", "0")
+        self._update_env_list(env_list, "TF_CPP_VMODULE", "grpc_host_buffer=3,rpc_helper=3,host_buffer=3,ifrt_backend=3,grpc_service_impl=3")
 
         env_list.append(
             {
@@ -320,6 +322,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
+            "--vmodule=grpc_host_buffer=3,rpc_helper=3,host_buffer=3,ifrt_backend=3,grpc_service_impl=3",
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
