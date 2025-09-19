@@ -144,14 +144,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
 
         Attributes:
             inner: The wrapped TPUReplicatedJob configuration.
-            pathways_head_cpu: CPU request for pathways-head container.
-            pathways_head_mem: Memory request for pathways-head container.
         """
 
         inner: Required[TPUReplicatedJob.Config] = REQUIRED
         pathways_xla_flags: list[str] = []
-        pathways_head_cpu: Optional[str] = None
-        pathways_head_mem: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -168,24 +164,6 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "Example: 'xla_tpu_x=24,megascale_y=true'",
             **common_kwargs,
         )
-        flags.DEFINE_string(
-            "pathways_head_cpu",
-            None,
-            "CPU request for pathways-head container in cores. Default is 1 core.",
-            **common_kwargs,
-        )
-        flags.DEFINE_string(
-            "pathways_head_mem",
-            None,
-            "Memory request for pathways-head container in GiB. Default is 16GiB",
-            **common_kwargs,
-        )
-
-    @classmethod
-    def set_defaults(cls, fv):
-        super().set_defaults(fv)
-        fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
-        fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
 
     @classmethod
     def default_config(cls):
@@ -311,11 +289,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
 
         head_container["env"] = env_list
 
-        cpu_req = f"{float(self.config.pathways_head_cpu) * 1000}m"
-        mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
-            "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
+            "requests": {},
+            "limits": {},
         }
         head_container["resources"] = resources
 
@@ -463,6 +439,11 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         annotations = _LoadBalancer(
             jobset_name=cfg.name, replicated_job_name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME
         ).metadata
+        annotations.update(
+            {
+                "alpha.jobset.sigs.k8s.io/exclusive-topology": "kubernetes.io/hostname",
+            }
+        )
         spec = dict(
             parallelism=1,
             completions=1,
@@ -485,6 +466,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         container = self._inner._build_container()
 
         worker_container = copy.deepcopy(container)
+        worker_container["name"] = "pathways-worker"
+
         env_list = worker_container.get("env", [])
 
         pathways_head_address = self._get_pathways_head_address(
