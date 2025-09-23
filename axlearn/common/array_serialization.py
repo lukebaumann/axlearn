@@ -18,6 +18,7 @@ https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/
 """
 import asyncio
 import functools
+import itertools
 import math
 import os
 import threading
@@ -26,6 +27,7 @@ from collections import defaultdict
 from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import datetime
 from typing import Any, Callable, Optional, Sequence, Union
 
 import jax
@@ -36,6 +38,7 @@ from absl import logging
 from jax._src import array, typing
 from jax._src.layout import Layout
 from jax.experimental.array_serialization import serialization
+from pathwaysutils.persistence import helper
 
 from axlearn.common.utils import Tensor
 
@@ -578,9 +581,86 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # has finished writing.
         self._start_async_commit(on_commit_callback)
 
+    def deserialize(
+        self,
+        shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
+        tensorstore_specs: Sequence[dict[str, Any]],
+        global_shapes: Optional[Sequence[array.Shape]] = None,
+        dtypes: Optional[Sequence[typing.DTypeLike]] = None,
+        concurrent_gb: int = 32,
+    ):
+        self.wait_until_finished()
+
+        if global_shapes is None:
+          global_shapes = []
+
+        if dtypes is None:
+          dtypes = []
+
+        # We can issue one bulk read request for all arrays in the same bucket
+        # and with the same mesh.
+        bulk_read_inputs = defaultdict(
+            lambda: dict(indices=[], names=[], dtypes=[], shapes=[], shardings=[])
+        )
+
+        for index, (tensorstore_spec, sharding, global_shape, dtype) in enumerate(
+            itertools.zip_longest(tensorstore_specs, shardings, global_shapes, dtypes)
+        ):
+            sharding = (sharding.sharding if isinstance(sharding, Layout) else sharding)
+            if not isinstance(sharding, jax.sharding.Sharding):
+                raise ValueError(
+                    "sharding passed to deserialization should be specified, concrete and"
+                    f" an instance of `jax.sharding.Sharding`. Got {sharding}"
+                )
+
+            kvstore = tensorstore_spec["kvstore"]
+            if kvstore.get("driver", "") != "gcs":
+                raise ValueError("Only GCS backed checkpoints have been tested")
+
+            location = f"gs://{kvstore['bucket']}"
+            name = kvstore["path"]
+            shape = tensorstore_spec["metadata"]["shape"] if global_shape is None else global_shape
+            dtype = tensorstore_spec["metadata"]["dtype"] if dtype is None else dtype
+
+            key = location, sharding.mesh
+            bulk_read_inputs[key]["indices"].append(index)
+            bulk_read_inputs[key]["names"].append(name)
+            bulk_read_inputs[key]["dtypes"].append(dtype)
+            bulk_read_inputs[key]["shapes"].append(shape)
+            bulk_read_inputs[key]["shardings"].append(sharding)
+
+        unsorted_results = []
+        read_futures = []
+        start = time.time()
+        # We make a bulk read request for all arrays with the same location
+        # and mesh, keeping track of each array's index in the orginal sequence
+        # so that we can sort them after the fact.
+        for (location, mesh), bulk_read_input in bulk_read_inputs.items():
+            arrays, read_future = helper.read_arrays(
+                location=location,
+                names=bulk_read_input["names"],
+                dtypes=bulk_read_input["dtypes"],
+                shapes=bulk_read_input["shapes"],
+                shardings=bulk_read_input["shardings"],
+                devices=mesh.devices,
+                timeout=datetime.timedelta(minutes=5),
+            )
+
+            read_futures.append(read_future)
+            logging.debug(f"Bulk read from {location=} {len(bulk_read_input['names'])} arrays")
+
+            unsorted_results.extend(list(zip(bulk_read_input["indices"], arrays)))
+
+        futures.wait(read_futures)
+        end = time.time()
+
+        logging.debug(f"Read {len(unsorted_results)} arrays in {end - start} seconds")
+
+        return [array for _, array in sorted(unsorted_results)]
+
     # Copied from (with modifications)
     # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
-    def deserialize(
+    def deserialize_original(
         self,
         shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
         tensorstore_specs: Sequence[dict[str, Any]],
