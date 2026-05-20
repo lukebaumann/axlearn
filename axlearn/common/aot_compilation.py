@@ -314,13 +314,72 @@ def get_devices_for_topology(
             )
         target_hardware = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[topology]
         devices_per_slice = target_hardware.devices_per_slice
-        topology_devices = get_topology_desc(
-            platform=target_hardware.platform,
-            topology_name=target_hardware.topology_name,
-            chip_config_name=target_hardware.chip_config_name,
-            chips_per_host_bounds=target_hardware.chips_per_host_bounds,
-            num_slices=topology_num_slices,
-        ).devices
+
+        try:
+            # pylint: disable-next=import-error,import-outside-toplevel
+            import pathwaysutils  # pytype: disable=import-error
+
+            is_pathways = pathwaysutils.is_pathways_backend_used()
+        except ImportError:
+            is_pathways = False
+
+        if is_pathways:
+            topology_devices = jax.devices()
+            assert target_hardware.platform == "tpu", (
+                f"Expected target hardware platform to be 'tpu', got {target_hardware.platform}"
+            )
+            for d in topology_devices:
+                assert d.platform in ["tpu", "proxy"], (
+                    f"Expected device platform to be 'tpu' or 'proxy', got {d.platform}"
+                )
+
+            expected_topology = get_topology_desc(
+                platform=target_hardware.platform,
+                topology_name=target_hardware.topology_name,
+                chip_config_name=target_hardware.chip_config_name,
+                chips_per_host_bounds=target_hardware.chips_per_host_bounds,
+                num_slices=topology_num_slices,
+            )
+            expected_devices = expected_topology.devices
+
+            assert len(topology_devices) == len(expected_devices), (
+                f"Device count mismatch: real={len(topology_devices)}, expected={len(expected_devices)}"
+            )
+            assert topology_devices[0].device_kind == expected_devices[0].device_kind, (
+                f"Device kind mismatch: real={topology_devices[0].device_kind}, expected={expected_devices[0].device_kind}"
+            )
+
+            if (
+                topology_devices
+                and expected_devices
+                and hasattr(topology_devices[0], "coords")
+                and hasattr(expected_devices[0], "coords")
+            ):
+                real_coords = sorted([d.coords for d in topology_devices])
+                expected_coords = sorted([d.coords for d in expected_devices])
+                assert real_coords == expected_coords, (
+                    f"Coords mismatch: real={real_coords}, expected={expected_coords}"
+                )
+
+            if (
+                topology_devices
+                and expected_devices
+                and hasattr(topology_devices[0], "slice_index")
+                and hasattr(expected_devices[0], "slice_index")
+            ):
+                real_slices = sorted([d.slice_index for d in topology_devices])
+                expected_slices = sorted([d.slice_index for d in expected_devices])
+                assert real_slices == expected_slices, (
+                    f"Slice index mismatch: real={real_slices}, expected={expected_slices}"
+                )
+        else:
+            topology_devices = get_topology_desc(
+                platform=target_hardware.platform,
+                topology_name=target_hardware.topology_name,
+                chip_config_name=target_hardware.chip_config_name,
+                chips_per_host_bounds=target_hardware.chips_per_host_bounds,
+                num_slices=topology_num_slices,
+            ).devices
     else:
         topology_devices = jax.devices()
         assert topology_num_slices == 1
